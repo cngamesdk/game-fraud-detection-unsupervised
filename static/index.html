@@ -1,0 +1,538 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>游戏风控 - 异常检测平台</title>
+<link rel="stylesheet" href="https://unpkg.com/element-plus/dist/index.css" />
+<script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+<script src="https://unpkg.com/element-plus"></script>
+<script src="https://unpkg.com/echarts@5/dist/echarts.min.js"></script>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif; background: #f0f2f5; }
+.app-header { background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%); color: #fff; padding: 20px 32px; display: flex; align-items: center; justify-content: space-between; }
+.app-header h1 { font-size: 22px; font-weight: 600; letter-spacing: 1px; }
+.app-header .sub { font-size: 13px; opacity: 0.7; margin-top: 4px; }
+.main-container { max-width: 1400px; margin: 0 auto; padding: 20px; }
+.status-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 24px; }
+.status-card { background: #fff; border-radius: 12px; padding: 20px; box-shadow: 0 2px 12px rgba(0,0,0,0.06); }
+.status-card .label { font-size: 13px; color: #909399; margin-bottom: 8px; }
+.status-card .value { font-size: 24px; font-weight: 700; color: #303133; }
+.status-card .value.success { color: #67c23a; }
+.status-card .value.danger { color: #f56c6c; }
+.tab-content { background: #fff; border-radius: 12px; padding: 24px; box-shadow: 0 2px 12px rgba(0,0,0,0.06); min-height: 500px; }
+.result-section { margin-top: 24px; }
+.risk-tag-high { background: #fef0f0; color: #f56c6c; border: 1px solid #fbc4c4; padding: 2px 12px; border-radius: 12px; font-weight: 600; }
+.risk-tag-medium { background: #fdf6ec; color: #e6a23c; border: 1px solid #f5dab1; padding: 2px 12px; border-radius: 12px; font-weight: 600; }
+.risk-tag-low { background: #f0f9eb; color: #67c23a; border: 1px solid #c2e7b0; padding: 2px 12px; border-radius: 12px; font-weight: 600; }
+.gauge-container { width: 320px; height: 280px; margin: 0 auto; }
+.predict-result-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; align-items: start; }
+.predict-detail-table { margin-top: 8px; }
+.trace-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 16px; }
+.trace-radar { width: 100%; height: 380px; }
+.fraud-types { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.summary-box { background: #f5f7fa; border-radius: 8px; padding: 16px; margin-top: 16px; line-height: 1.8; color: #606266; font-size: 14px; }
+.batch-grid { display: grid; grid-template-columns: 300px 1fr; gap: 24px; margin-top: 16px; }
+.batch-pie { width: 300px; height: 300px; }
+.wl-badge { background: #ecf5ff; color: #409eff; border: 1px solid #b3d8ff; padding: 2px 10px; border-radius: 12px; font-weight: 600; font-size: 12px; margin-left: 8px; }
+.bl-badge { background: #fef0f0; color: #f56c6c; border: 1px solid #fbc4c4; padding: 2px 10px; border-radius: 12px; font-weight: 600; font-size: 12px; margin-left: 8px; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div class="app-header">
+    <div>
+      <h1>游戏风控 - 异常检测平台</h1>
+      <div class="sub">基于无监督学习的游戏反欺诈检测服务</div>
+    </div>
+    <div style="display:flex;gap:10px;align-items:center;">
+      <el-button type="primary" plain @click="refreshStatus" :loading="statusLoading" size="small">刷新状态</el-button>
+      <el-button type="danger" plain @click="logout" size="small">退出登录</el-button>
+    </div>
+  </div>
+  <div class="main-container">
+    <div class="status-cards">
+      <div class="status-card"><div class="label">模型状态</div><div class="value" :class="modelStatus.is_fitted?'success':'danger'">{{ modelStatus.is_fitted ? '已训练' : '未训练' }}</div></div>
+      <div class="status-card"><div class="label">模型版本</div><div class="value">{{ modelStatus.version || '-' }}</div></div>
+      <div class="status-card"><div class="label">训练样本数</div><div class="value">{{ modelStatus.training_sample_count?.toLocaleString() || '0' }}</div></div>
+      <div class="status-card"><div class="label">特征维度</div><div class="value">{{ modelStatus.feature_count || '0' }}</div></div>
+      <div class="status-card"><div class="label">上次训练</div><div class="value" style="font-size:15px;">{{ modelStatus.last_trained_at || '-' }}</div></div>
+    </div>
+    <div class="tab-content">
+      <el-tabs v-model="activeTab" type="border-card">
+
+        <!-- UID 预测 -->
+        <el-tab-pane label="UID预测" name="predict">
+          <el-form :inline="true" @submit.prevent="doPrediction">
+            <el-form-item label="用户 UID"><el-input v-model="predictUid" placeholder="请输入用户ID" clearable style="width:320px;" /></el-form-item>
+            <el-form-item><el-button type="primary" @click="doPrediction" :loading="predictLoading">检测</el-button></el-form-item>
+          </el-form>
+          <div v-if="predictResult" class="result-section">
+            <div class="predict-result-grid">
+              <div><div ref="gaugeChart" class="gauge-container"></div></div>
+              <div>
+                <el-descriptions title="检测结果" :column="1" border class="predict-detail-table">
+                  <el-descriptions-item label="用户ID">{{ predictResult.uid }}<span v-if="predictResult.is_whitelisted" class="wl-badge">白名单</span><span v-if="predictResult.is_blacklisted" class="bl-badge">黑名单</span></el-descriptions-item>
+                  <el-descriptions-item label="风险等级"><span :class="'risk-tag-'+predictResult.risk_label">{{ riskLabelText(predictResult.risk_label) }}</span></el-descriptions-item>
+                  <el-descriptions-item label="综合风险分">{{ predictResult.risk_score.toFixed(4) }}</el-descriptions-item>
+                  <el-descriptions-item label="IF 分数">{{ predictResult.if_score.toFixed(4) }}</el-descriptions-item>
+                  <el-descriptions-item label="Z-Score 分量">{{ predictResult.zscore_component.toFixed(4) }}</el-descriptions-item>
+                </el-descriptions>
+                <el-button type="warning" plain style="margin-top:16px;" @click="goTrace(predictResult.uid)">查看风险溯源</el-button>
+              </div>
+            </div>
+          </div>
+        </el-tab-pane>
+
+        <!-- 设备预测 -->
+        <el-tab-pane label="设备预测" name="device">
+          <el-form label-width="100px" style="max-width:700px;" @submit.prevent="doDevicePredict">
+            <el-row :gutter="16">
+              <el-col :span="8"><el-form-item label="IMEI"><el-input v-model="devImei" placeholder="IMEI" clearable /></el-form-item></el-col>
+              <el-col :span="8"><el-form-item label="OAID"><el-input v-model="devOaid" placeholder="OAID" clearable /></el-form-item></el-col>
+              <el-col :span="8"><el-form-item label="IDFV"><el-input v-model="devIdfv" placeholder="IDFV" clearable /></el-form-item></el-col>
+            </el-row>
+            <el-row :gutter="16">
+              <el-col :span="8"><el-form-item label="品牌"><el-input v-model="devBrand" placeholder="device_brand" clearable /></el-form-item></el-col>
+              <el-col :span="8"><el-form-item label="型号"><el-input v-model="devModel" placeholder="device_model" clearable /></el-form-item></el-col>
+              <el-col :span="8"><el-form-item label="系统"><el-input v-model="devOs" placeholder="os" clearable /></el-form-item></el-col>
+            </el-row>
+            <el-row :gutter="16">
+              <el-col :span="8"><el-form-item label="系统版本"><el-input v-model="devSysVer" placeholder="system_version" clearable /></el-form-item></el-col>
+              <el-col :span="8"><el-form-item label="UA"><el-input v-model="devUa" placeholder="split_ua" clearable /></el-form-item></el-col>
+              <el-col :span="8"><el-form-item><el-button type="primary" @click="doDevicePredict" :loading="deviceLoading">检测设备</el-button></el-form-item></el-col>
+            </el-row>
+          </el-form>
+          <div v-if="deviceResult" class="result-section">
+            <el-alert :title="`设备指纹: ${deviceResult.device_fp} | 关联 ${deviceResult.associated_uids} 个UID | 高风险: ${deviceResult.high_risk_count} | 中风险: ${deviceResult.medium_risk_count} | 低风险: ${deviceResult.low_risk_count}`
+              + (deviceResult.is_blacklisted ? ' | 设备已加黑' : '') + (deviceResult.is_whitelisted ? ' | 设备已加白' : '')"
+              :type="deviceResult.is_blacklisted ? 'error' : deviceResult.is_whitelisted ? 'success' : 'info'" :closable="false" show-icon />
+          </div>
+        </el-tab-pane>
+
+        <!-- IP预测 -->
+        <el-tab-pane label="IP预测" name="ip">
+          <el-form :inline="true" @submit.prevent="doIpPredict">
+            <el-form-item label="IPv4 地址"><el-input v-model="ipAddr" placeholder="请输入IP地址" clearable style="width:320px;" /></el-form-item>
+            <el-form-item><el-button type="primary" @click="doIpPredict" :loading="ipLoading">检测</el-button></el-form-item>
+          </el-form>
+          <div v-if="ipResult" class="result-section">
+            <el-alert :title="`关联 ${ipResult.associated_uids} 个UID | 高风险: ${ipResult.high_risk_count} | 中风险: ${ipResult.medium_risk_count} | 低风险: ${ipResult.low_risk_count}`
+              + (ipResult.is_blacklisted ? ' | IP已加黑' : '') + (ipResult.is_whitelisted ? ' | IP已加白' : '')"
+              :type="ipResult.is_blacklisted ? 'error' : ipResult.is_whitelisted ? 'success' : 'info'" :closable="false" show-icon />
+          </div>
+        </el-tab-pane>
+
+        <!-- 批量预测 -->
+        <el-tab-pane label="批量预测" name="batch">
+          <el-form @submit.prevent="doBatchPrediction">
+            <el-form-item label="UID 列表"><el-input v-model="batchUids" type="textarea" :rows="4" placeholder="每行一个或逗号分隔（最多500个）" style="width:100%;max-width:600px;" /></el-form-item>
+            <el-form-item><el-button type="primary" @click="doBatchPrediction" :loading="batchLoading">批量检测</el-button></el-form-item>
+          </el-form>
+          <div v-if="batchResult" class="result-section">
+            <el-alert :title="`共 ${batchResult.total} 个用户 | 高风险: ${batchResult.high_risk_count} | 中风险: ${batchResult.medium_risk_count} | 低风险: ${batchResult.low_risk_count}`" type="info" :closable="false" show-icon style="margin-bottom:16px;" />
+            <div class="batch-grid">
+              <div ref="batchPieChart" class="batch-pie"></div>
+              <el-table :data="batchResult.results" stripe border max-height="500" style="width:100%;">
+                <el-table-column prop="uid" label="UID" min-width="180"><template #default="{row}">{{ row.uid }}<span v-if="row.is_whitelisted" class="wl-badge">白</span><span v-if="row.is_blacklisted" class="bl-badge">黑</span></template></el-table-column>
+                <el-table-column prop="risk_score" label="风险分" width="120" sortable><template #default="{row}">{{ row.risk_score.toFixed(4) }}</template></el-table-column>
+                <el-table-column prop="risk_label" label="风险等级" width="120" sortable :filters="[{text:'高风险',value:'high'},{text:'中风险',value:'medium'},{text:'低风险',value:'low'}]" :filter-method="(v,r)=>r.risk_label===v">
+                  <template #default="{row}"><span :class="'risk-tag-'+row.risk_label">{{ riskLabelText(row.risk_label) }}</span></template>
+                </el-table-column>
+                <el-table-column label="操作" width="100" fixed="right"><template #default="{row}"><el-button type="primary" link size="small" @click="goTrace(row.uid)">溯源</el-button></template></el-table-column>
+              </el-table>
+            </div>
+          </div>
+        </el-tab-pane>
+
+        <!-- 风险溯源 -->
+        <el-tab-pane label="风险溯源" name="trace">
+          <el-form :inline="true" @submit.prevent="doTrace">
+            <el-form-item label="用户 UID"><el-input v-model="traceUid" placeholder="请输入用户ID" clearable style="width:320px;" /></el-form-item>
+            <el-form-item><el-button type="warning" @click="doTrace" :loading="traceLoading">溯源分析</el-button></el-form-item>
+          </el-form>
+          <div v-if="traceResult" class="result-section">
+            <el-descriptions :column="2" border>
+              <el-descriptions-item label="用户ID">{{ traceResult.uid }}<span v-if="traceResult.is_whitelisted" class="wl-badge">白名单</span><span v-if="traceResult.is_blacklisted" class="bl-badge">黑名单</span></el-descriptions-item>
+              <el-descriptions-item label="风险等级"><span :class="'risk-tag-'+traceResult.risk_label">{{ riskLabelText(traceResult.risk_label) }}</span></el-descriptions-item>
+              <el-descriptions-item label="风险分">{{ traceResult.risk_score.toFixed(4) }}</el-descriptions-item>
+              <el-descriptions-item label="主要欺诈类型"><div class="fraud-types"><el-tag v-for="t in traceResult.primary_risk_types" :key="t" type="danger" effect="dark">{{ t }}</el-tag></div></el-descriptions-item>
+            </el-descriptions>
+            <div class="trace-grid">
+              <div><h4 style="margin-bottom:8px;">异常特征雷达图</h4><div ref="traceRadarChart" class="trace-radar"></div></div>
+              <div><h4 style="margin-bottom:8px;">异常特征明细</h4>
+                <el-table :data="traceResult.top_anomalous_features" stripe border max-height="360">
+                  <el-table-column prop="description" label="特征" min-width="160" />
+                  <el-table-column prop="user_value" label="用户值" width="100"><template #default="{row}">{{ formatNum(row.user_value) }}</template></el-table-column>
+                  <el-table-column prop="population_median" label="中位数" width="100"><template #default="{row}">{{ formatNum(row.population_median) }}</template></el-table-column>
+                  <el-table-column prop="z_score" label="Z-Score" width="100" sortable><template #default="{row}"><span :style="{color:Math.abs(row.z_score)>3?'#f56c6c':Math.abs(row.z_score)>2?'#e6a23c':'#303133',fontWeight:Math.abs(row.z_score)>2?700:400}">{{ row.z_score.toFixed(2) }}</span></template></el-table-column>
+                  <el-table-column prop="suspected_fraud_types" label="关联欺诈类型" min-width="180"><template #default="{row}"><el-tag v-for="t in row.suspected_fraud_types" :key="t" size="small" style="margin:2px;">{{ t }}</el-tag></template></el-table-column>
+                </el-table>
+              </div>
+            </div>
+            <div class="summary-box"><strong>风险摘要：</strong>{{ traceResult.summary }}</div>
+          </div>
+        </el-tab-pane>
+
+        <!-- 模型训练 -->
+        <el-tab-pane label="模型训练" name="train">
+          <el-alert title="触发模型训练将重新提取特征并训练 Isolation Forest 模型，耗时取决于数据量" type="warning" :closable="false" show-icon style="margin-bottom:20px;" />
+          <el-form>
+            <el-form-item label="训练模式">
+              <el-radio-group v-model="trainFullRetrain">
+                <el-radio :value="false">增量训练</el-radio>
+                <el-radio :value="true">全量重训</el-radio>
+              </el-radio-group>
+            </el-form-item>
+            <el-form-item>
+              <el-popconfirm title="确认要开始训练吗？" @confirm="doTrain">
+                <template #reference><el-button type="success" :loading="trainLoading" size="large">{{ trainLoading ? '训练中...' : '开始训练' }}</el-button></template>
+              </el-popconfirm>
+            </el-form-item>
+          </el-form>
+          <div v-if="trainResult" class="result-section">
+            <el-result icon="success" title="训练完成">
+              <template #extra>
+                <el-descriptions :column="2" border>
+                  <el-descriptions-item label="状态">{{ trainResult.status }}</el-descriptions-item>
+                  <el-descriptions-item label="训练时间">{{ trainResult.trained_at }}</el-descriptions-item>
+                  <el-descriptions-item label="样本数量">{{ trainResult.sample_count.toLocaleString() }}</el-descriptions-item>
+                  <el-descriptions-item label="模型版本">{{ trainResult.version }}</el-descriptions-item>
+                  <el-descriptions-item label="特征维度">{{ trainResult.feature_count }}</el-descriptions-item>
+                </el-descriptions>
+              </template>
+            </el-result>
+          </div>
+        </el-tab-pane>
+
+        <!-- 名单管理 -->
+        <el-tab-pane label="名单管理" name="blocklist">
+          <el-form @submit.prevent="addBlocklistEntry" style="margin-bottom:16px;" label-width="80px">
+            <el-row :gutter="12">
+              <el-col :span="4">
+                <el-form-item label="类型">
+                  <el-select v-model="blType" placeholder="选择类型" style="width:100%;">
+                    <el-option label="UID" value="uid"></el-option>
+                    <el-option label="设备" value="device"></el-option>
+                    <el-option label="IP" value="ip"></el-option>
+                  </el-select>
+                </el-form-item>
+              </el-col>
+              <el-col :span="4">
+                <el-form-item label="名单">
+                  <el-select v-model="blListType" placeholder="选择名单" style="width:100%;">
+                    <el-option label="白名单" value="whitelist"></el-option>
+                    <el-option label="黑名单" value="blacklist"></el-option>
+                  </el-select>
+                </el-form-item>
+              </el-col>
+              <el-col :span="4">
+                <el-form-item label="平台">
+                  <el-select v-model="blPlatform" placeholder="选择平台" style="width:100%;">
+                    <el-option label="wanzi" value="wanzi"></el-option>
+                  </el-select>
+                </el-form-item>
+              </el-col>
+              <!-- uid / ip 单值输入 -->
+              <el-col :span="8" v-if="blType !== 'device'">
+                <el-form-item label="值">
+                  <el-input v-model="blValue" :placeholder="blType==='ip' ? '请输入IP地址' : '请输入UID'" clearable />
+                </el-form-item>
+              </el-col>
+              <el-col :span="4" v-if="blType !== 'device'">
+                <el-form-item><el-button type="primary" @click="addBlocklistEntry" :loading="blAdding">添加</el-button></el-form-item>
+              </el-col>
+            </el-row>
+            <!-- 设备维度输入 -->
+            <template v-if="blType === 'device'">
+              <el-row :gutter="12">
+                <el-col :span="6"><el-form-item label="IMEI"><el-input v-model="blDevImei" clearable /></el-form-item></el-col>
+                <el-col :span="6"><el-form-item label="OAID"><el-input v-model="blDevOaid" clearable /></el-form-item></el-col>
+                <el-col :span="6"><el-form-item label="IDFV"><el-input v-model="blDevIdfv" clearable /></el-form-item></el-col>
+                <el-col :span="6"><el-form-item label="品牌"><el-input v-model="blDevBrand" clearable /></el-form-item></el-col>
+              </el-row>
+              <el-row :gutter="12">
+                <el-col :span="6"><el-form-item label="型号"><el-input v-model="blDevModel" clearable /></el-form-item></el-col>
+                <el-col :span="6"><el-form-item label="系统"><el-input v-model="blDevOs" clearable /></el-form-item></el-col>
+                <el-col :span="6"><el-form-item label="版本"><el-input v-model="blDevSysVer" clearable /></el-form-item></el-col>
+                <el-col :span="3"><el-form-item label="UA"><el-input v-model="blDevUa" clearable /></el-form-item></el-col>
+                <el-col :span="3"><el-form-item><el-button type="primary" @click="addBlocklistEntry" :loading="blAdding">添加</el-button></el-form-item></el-col>
+              </el-row>
+            </template>
+          </el-form>
+
+          <el-form :inline="true" style="margin-bottom:16px;">
+            <el-form-item label="筛选类型">
+              <el-select v-model="blFilterType" clearable placeholder="全部" style="width:110px;">
+                <el-option label="UID" value="uid"></el-option>
+                <el-option label="设备" value="device"></el-option>
+                <el-option label="IP" value="ip"></el-option>
+              </el-select>
+            </el-form-item>
+            <el-form-item label="筛选名单">
+              <el-select v-model="blFilterListType" clearable placeholder="全部" style="width:120px;">
+                <el-option label="白名单" value="whitelist"></el-option>
+                <el-option label="黑名单" value="blacklist"></el-option>
+              </el-select>
+            </el-form-item>
+            <el-form-item>
+              <el-button @click="loadBlocklist" :loading="blLoading">查询</el-button>
+            </el-form-item>
+          </el-form>
+
+          <el-alert v-if="blData" :title="`共 ${blData.total} 条记录`" type="info" :closable="false" show-icon style="margin-bottom:16px;" />
+          <el-table v-if="blData" :data="blFilteredItems" stripe border max-height="500" table-layout="auto" style="width:100%;">
+            <el-table-column type="index" label="#" />
+            <el-table-column label="值/指纹" min-width="200">
+              <template #header><el-input v-model="blSearch" size="small" placeholder="搜索" clearable /></template>
+              <template #default="{row}">
+                <span v-if="row.type!=='device'">{{ row.key }}</span>
+                <el-tooltip v-else placement="top">
+                  <template #content>
+                    <div style="line-height:1.8;">
+                      <div v-if="row.value.imei">IMEI: {{ row.value.imei }}</div>
+                      <div v-if="row.value.oaid">OAID: {{ row.value.oaid }}</div>
+                      <div v-if="row.value.idfv">IDFV: {{ row.value.idfv }}</div>
+                      <div v-if="row.value.device_brand">品牌: {{ row.value.device_brand }}</div>
+                      <div v-if="row.value.device_model">型号: {{ row.value.device_model }}</div>
+                      <div v-if="row.value.os">系统: {{ row.value.os }}</div>
+                      <div v-if="row.value.system_version">版本: {{ row.value.system_version }}</div>
+                      <div v-if="row.value.split_ua">UA: {{ row.value.split_ua }}</div>
+                    </div>
+                  </template>
+                  <span style="cursor:pointer;">{{ row.value.imei || row.value.oaid || row.value.idfv || row.key.slice(0,16)+'...' }} <span style="color:#409eff;">[详情]</span></span>
+                </el-tooltip>
+              </template>
+            </el-table-column>
+            <el-table-column label="设备信息" min-width="200" v-if="blFilterType==='device'">
+              <template #default="{row}">
+                <template v-if="row.type==='device'">
+                  <span v-if="row.value.device_brand||row.value.device_model">{{ row.value.device_brand }} {{ row.value.device_model }}</span>
+                  <span v-if="row.value.os" style="margin-left:6px;color:#909399;">{{ row.value.os }} {{ row.value.system_version }}</span>
+                </template>
+                <span v-else style="color:#c0c4cc;">-</span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="type" label="类型">
+              <template #default="{row}">{{ {uid:'UID',device:'设备',ip:'IP'}[row.type] }}</template>
+            </el-table-column>
+            <el-table-column prop="list_type" label="名单">
+              <template #default="{row}"><el-tag :type="row.list_type==='blacklist'?'danger':''" size="small">{{ row.list_type==='blacklist'?'黑名单':'白名单' }}</el-tag></template>
+            </el-table-column>
+            <el-table-column prop="platform" label="平台" />
+            <el-table-column label="操作">
+              <template #default="{row}">
+                <el-popconfirm title="确认移除?" @confirm="removeBlocklistEntry(row)">
+                  <template #reference><el-button type="danger" link size="small">移除</el-button></template>
+                </el-popconfirm>
+              </template>
+            </el-table-column>
+          </el-table>
+        </el-tab-pane>
+
+      </el-tabs>
+    </div>
+  </div>
+</div>
+
+<script>
+const { createApp, ref, nextTick, onMounted } = Vue;
+
+const app = createApp({
+  setup() {
+    const API = '/api/v1';
+    const activeTab = ref('predict');
+    const statusLoading = ref(false);
+    const modelStatus = ref({});
+
+    const predictUid = ref(''); const predictLoading = ref(false); const predictResult = ref(null); const gaugeChart = ref(null);
+    const devImei = ref(''); const devOaid = ref(''); const devIdfv = ref('');
+    const devBrand = ref(''); const devModel = ref(''); const devOs = ref('');
+    const devSysVer = ref(''); const devUa = ref('');
+    const deviceLoading = ref(false); const deviceResult = ref(null);
+    const ipAddr = ref(''); const ipLoading = ref(false); const ipResult = ref(null);
+    const batchUids = ref(''); const batchLoading = ref(false); const batchResult = ref(null); const batchPieChart = ref(null);
+    const traceUid = ref(''); const traceLoading = ref(false); const traceResult = ref(null); const traceRadarChart = ref(null);
+    const trainFullRetrain = ref(false); const trainLoading = ref(false); const trainResult = ref(null);
+
+    // blocklist
+    const blType = ref('uid'); const blListType = ref('whitelist'); const blValue = ref(''); const blPlatform = ref('wanzi');
+    const blDevImei = ref(''); const blDevOaid = ref(''); const blDevIdfv = ref('');
+    const blDevBrand = ref(''); const blDevModel = ref(''); const blDevOs = ref('');
+    const blDevSysVer = ref(''); const blDevUa = ref('');
+    const blAdding = ref(false); const blLoading = ref(false); const blData = ref(null); const blSearch = ref('');
+    const blFilterType = ref(''); const blFilterListType = ref('');
+    const blFilteredItems = Vue.computed(() => {
+      if (!blData.value) return [];
+      if (!blSearch.value) return blData.value.items;
+      return blData.value.items.filter(r => r.key.includes(blSearch.value));
+    });
+
+    const riskLabelText = (l) => ({high:'高风险',medium:'中风险',low:'低风险'}[l]||l);
+    const formatNum = (v) => v==null?'-':(Math.abs(v)>=1000?v.toFixed(0):v.toFixed(2));
+
+    async function apiFetch(url, opts={}) {
+      const res = await fetch(API+url, { headers:{'Content-Type':'application/json'}, ...opts });
+      if (!res.ok) { const e = await res.json().catch(()=>({})); throw new Error(e.detail||e.error||`HTTP ${res.status}`); }
+      return res.json();
+    }
+
+    async function refreshStatus() { statusLoading.value=true; try { modelStatus.value=await apiFetch('/model/status'); } catch(e){ ElementPlus.ElMessage.error(e.message); } finally { statusLoading.value=false; } }
+
+    function logout() { window.location.href= '/logout'; }
+
+    // ── gauge ──
+    function renderGauge(score, label) {
+      nextTick(()=>{
+        if(!gaugeChart.value) return;
+        const c=echarts.init(gaugeChart.value), color=label==='high'?'#f56c6c':label==='medium'?'#e6a23c':'#67c23a';
+        c.setOption({series:[{type:'gauge',startAngle:200,endAngle:-20,min:0,max:1,splitNumber:10,itemStyle:{color},progress:{show:true,width:20},pointer:{show:true,length:'60%',width:5},axisLine:{lineStyle:{width:20,color:[[0.4,'#67c23a'],[0.65,'#e6a23c'],[1,'#f56c6c']]}},axisTick:{show:false},splitLine:{length:8,lineStyle:{width:2,color:'#999'}},axisLabel:{distance:28,fontSize:11,color:'#999'},title:{show:true,offsetCenter:[0,'70%'],fontSize:16,color:'#666'},detail:{valueAnimation:true,fontSize:28,fontWeight:700,offsetCenter:[0,'45%'],formatter:v=>v.toFixed(4),color},data:[{value:score,name:'风险分数'}]}]});
+        window.addEventListener('resize',()=>c.resize(),{once:true});
+      });
+    }
+
+    async function doPrediction() {
+      if(!predictUid.value.trim()) return ElementPlus.ElMessage.warning('请输入用户ID');
+      predictLoading.value=true; predictResult.value=null;
+      try { const d=await apiFetch('/predict',{method:'POST',body:JSON.stringify({uid:predictUid.value.trim()})}); predictResult.value=d; renderGauge(d.risk_score,d.risk_label); }
+      catch(e){ ElementPlus.ElMessage.error(e.message); } finally { predictLoading.value=false; }
+    }
+
+    // ── device predict ──
+    async function doDevicePredict() {
+      if(!devImei.value.trim() && !devOaid.value.trim() && !devIdfv.value.trim()
+        && !devBrand.value.trim() && !devModel.value.trim()) return ElementPlus.ElMessage.warning('请至少填写一项设备信息');
+      deviceLoading.value=true; deviceResult.value=null;
+      try {
+        deviceResult.value=await apiFetch('/predict-device',{method:'POST',body:JSON.stringify({
+          imei:devImei.value.trim(), oaid:devOaid.value.trim(), idfv:devIdfv.value.trim(),
+          device_brand:devBrand.value.trim(), device_model:devModel.value.trim(),
+          os:devOs.value.trim(), system_version:devSysVer.value.trim(), split_ua:devUa.value.trim(),
+        })});
+      } catch(e){ ElementPlus.ElMessage.error(e.message); } finally { deviceLoading.value=false; }
+    }
+
+    // ── ip predict ──
+    async function doIpPredict() {
+      if(!ipAddr.value.trim()) return ElementPlus.ElMessage.warning('请输入IP地址');
+      ipLoading.value=true; ipResult.value=null;
+      try { ipResult.value=await apiFetch('/predict-ip',{method:'POST',body:JSON.stringify({ip:ipAddr.value.trim()})}); }
+      catch(e){ ElementPlus.ElMessage.error(e.message); } finally { ipLoading.value=false; }
+    }
+
+    // ── batch ──
+    function renderBatchPie(data) {
+      nextTick(()=>{
+        if(!batchPieChart.value) return;
+        const c=echarts.init(batchPieChart.value);
+        c.setOption({tooltip:{trigger:'item',formatter:'{b}: {c} ({d}%)'},legend:{bottom:0},series:[{type:'pie',radius:['40%','70%'],itemStyle:{borderRadius:6,borderColor:'#fff',borderWidth:2},label:{show:true,formatter:'{b}\n{c}'},data:[{value:data.high_risk_count,name:'高风险',itemStyle:{color:'#f56c6c'}},{value:data.medium_risk_count,name:'中风险',itemStyle:{color:'#e6a23c'}},{value:data.low_risk_count,name:'低风险',itemStyle:{color:'#67c23a'}}].filter(d=>d.value>0)}]});
+        window.addEventListener('resize',()=>c.resize(),{once:true});
+      });
+    }
+    async function doBatchPrediction() {
+      const raw=batchUids.value.trim(); if(!raw) return ElementPlus.ElMessage.warning('请输入用户ID');
+      const uids=raw.split(/[\n,;，；\s]+/).map(s=>s.trim()).filter(Boolean);
+      if(uids.length>500) return ElementPlus.ElMessage.error('最多500个');
+      batchLoading.value=true; batchResult.value=null;
+      try { const d=await apiFetch('/batch-predict',{method:'POST',body:JSON.stringify({uids})}); batchResult.value=d; renderBatchPie(d); }
+      catch(e){ ElementPlus.ElMessage.error(e.message); } finally { batchLoading.value=false; }
+    }
+
+    // ── trace ──
+    function renderRadar(feats) {
+      nextTick(()=>{
+        if(!traceRadarChart.value||!feats.length) return;
+        const c=echarts.init(traceRadarChart.value);
+        const ind=feats.map(f=>({name:f.description.length>8?f.description.slice(0,8)+'..':f.description,max:Math.max(Math.abs(f.z_score)*1.3,3)}));
+        c.setOption({tooltip:{},radar:{indicator:ind,radius:'65%',axisName:{fontSize:11,color:'#666'}},series:[{type:'radar',data:[{value:feats.map(f=>Math.abs(f.z_score)),name:'Z-Score',areaStyle:{color:'rgba(245,108,108,0.25)'},lineStyle:{color:'#f56c6c',width:2},itemStyle:{color:'#f56c6c'}}]}]});
+        window.addEventListener('resize',()=>c.resize(),{once:true});
+      });
+    }
+    async function doTrace() {
+      if(!traceUid.value.trim()) return ElementPlus.ElMessage.warning('请输入用户ID');
+      traceLoading.value=true; traceResult.value=null;
+      try { const d=await apiFetch('/trace/'+encodeURIComponent(traceUid.value.trim())); traceResult.value=d; renderRadar(d.top_anomalous_features||[]); }
+      catch(e){ ElementPlus.ElMessage.error(e.message); } finally { traceLoading.value=false; }
+    }
+    function goTrace(uid) { traceUid.value=uid; activeTab.value='trace'; nextTick(()=>doTrace()); }
+
+    // ── train ──
+    async function doTrain() {
+      trainLoading.value=true; trainResult.value=null;
+      try { trainResult.value=await apiFetch('/train',{method:'POST',body:JSON.stringify({full_retrain:trainFullRetrain.value})}); ElementPlus.ElMessage.success('训练完成'); refreshStatus(); }
+      catch(e){ ElementPlus.ElMessage.error('训练失败: '+e.message); } finally { trainLoading.value=false; }
+    }
+
+    // ── blocklist ──
+    async function loadBlocklist() {
+      blLoading.value=true;
+      try {
+        let qs=''; const p=[];
+        if(blFilterType.value) p.push('type='+blFilterType.value);
+        if(blFilterListType.value) p.push('list_type='+blFilterListType.value);
+        if(p.length) qs='?'+p.join('&');
+        blData.value=await apiFetch('/blocklist'+qs);
+      } catch(e){ ElementPlus.ElMessage.error(e.message); } finally { blLoading.value=false; }
+    }
+    async function addBlocklistEntry() {
+      const isDevice = blType.value === 'device';
+      const isUid = blType.value === 'uid';
+      if (!isDevice && !blValue.value.trim()) return ElementPlus.ElMessage.warning('请输入值');
+      if (isDevice && !blDevImei.value.trim() && !blDevOaid.value.trim() && !blDevIdfv.value.trim()
+        && !blDevBrand.value.trim() && !blDevModel.value.trim()) return ElementPlus.ElMessage.warning('请至少填写一项设备信息');
+      blAdding.value=true;
+      try {
+        const payload = {
+          type: blType.value,
+          list_type: blListType.value,
+          platform: blPlatform.value,
+        };
+        if (isUid) {
+          payload.uid = blValue.value.trim();
+        } else if (blType.value === 'ip') {
+          payload.ip = blValue.value.trim();
+        } else {
+          Object.assign(payload, {
+            imei: blDevImei.value.trim(), oaid: blDevOaid.value.trim(), idfv: blDevIdfv.value.trim(),
+            device_brand: blDevBrand.value.trim(), device_model: blDevModel.value.trim(),
+            os: blDevOs.value.trim(), system_version: blDevSysVer.value.trim(), split_ua: blDevUa.value.trim(),
+          });
+        }
+        await apiFetch('/blocklist',{method:'POST',body:JSON.stringify(payload)});
+        blValue.value=''; blDevImei.value=''; blDevOaid.value=''; blDevIdfv.value='';
+        blDevBrand.value=''; blDevModel.value=''; blDevOs.value=''; blDevSysVer.value=''; blDevUa.value='';
+        ElementPlus.ElMessage.success('已添加'); loadBlocklist();
+      } catch(e){ ElementPlus.ElMessage.error(e.message); } finally { blAdding.value=false; }
+    }
+    async function removeBlocklistEntry(row) {
+      try {
+        await apiFetch(`/blocklist?key=${encodeURIComponent(row.key)}&type=${row.type}&list_type=${row.list_type}`,{method:'DELETE'});
+        ElementPlus.ElMessage.success('已移除'); loadBlocklist();
+      } catch(e){ ElementPlus.ElMessage.error(e.message); }
+    }
+
+    onMounted(()=>{ refreshStatus(); loadBlocklist(); });
+
+    return {
+      activeTab,statusLoading,modelStatus,refreshStatus,logout,
+      predictUid,predictLoading,predictResult,gaugeChart,doPrediction,
+      devImei,devOaid,devIdfv,devBrand,devModel,devOs,devSysVer,devUa,
+      deviceLoading,deviceResult,doDevicePredict,
+      ipAddr,ipLoading,ipResult,doIpPredict,
+      batchUids,batchLoading,batchResult,batchPieChart,doBatchPrediction,
+      traceUid,traceLoading,traceResult,traceRadarChart,doTrace,goTrace,
+      trainFullRetrain,trainLoading,trainResult,doTrain,
+      blType,blListType,blValue,blPlatform,blAdding,blLoading,blData,blSearch,
+      blDevImei,blDevOaid,blDevIdfv,blDevBrand,blDevModel,blDevOs,blDevSysVer,blDevUa,
+      blFilterType,blFilterListType,blFilteredItems,
+      loadBlocklist,addBlocklistEntry,removeBlocklistEntry,
+      riskLabelText,formatNum,
+    };
+  },
+});
+app.use(ElementPlus);
+app.mount('#app');
+</script>
+</body>
+</html>
