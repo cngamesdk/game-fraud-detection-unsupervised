@@ -25,6 +25,7 @@ async def get_pool() -> aiomysql.Pool:
             maxsize=settings.MYSQL_POOL_SIZE,
             autocommit=True,
             charset="utf8mb4",
+            pool_recycle=1800,
         )
     return _pool
 
@@ -52,16 +53,48 @@ def _log_sql(sql: str, params: tuple | None, rows: int, elapsed_ms: float) -> No
     )
 
 
+async def _ping_conn(conn: aiomysql.Connection) -> bool:
+    """Ping connection; return False if broken."""
+    try:
+        await conn.ping(reconnect=False)
+        return True
+    except Exception:
+        return False
+
+
 async def execute_query(sql: str, params: tuple | None = None) -> list[dict]:
-    """Execute a read query and return a list of dicts (for small result sets)."""
+    """Execute a read query and return a list of dicts (for small result sets).
+
+    Retries once on connection-level errors (packet sequence, broken pipe, lost connection).
+    """
     pool = await get_pool()
-    t0 = time.perf_counter()
-    async with pool.acquire() as conn:
-        async with conn.cursor(aiomysql.DictCursor) as cur:
-            await cur.execute(sql, params)
-            result = await cur.fetchall()
-    _log_sql(sql, params, len(result), (time.perf_counter() - t0) * 1000)
-    return result
+    last_err: Exception | None = None
+    for attempt in range(2):
+        t0 = time.perf_counter()
+        conn = await pool.acquire()
+        try:
+            if not await _ping_conn(conn):
+                conn.close()
+                pool.release(conn)
+                continue
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await cur.execute(sql, params)
+                result = await cur.fetchall()
+            _log_sql(sql, params, len(result), (time.perf_counter() - t0) * 1000)
+            pool.release(conn)
+            return result
+        except Exception as e:
+            last_err = e
+            elapsed = (time.perf_counter() - t0) * 1000
+            _log_sql(sql, params, 0, elapsed)
+            # Close broken connection so it's not reused
+            conn.close()
+            pool.release(conn)
+            if attempt == 0 and _is_connection_error(e):
+                logger.warning(f"Connection error (attempt {attempt+1}), retrying: {e}")
+                continue
+            raise
+    raise last_err  # type: ignore[misc]
 
 
 async def execute_query_batched(
@@ -83,21 +116,54 @@ async def execute_query_batched(
     size = batch_size or settings.QUERY_BATCH_SIZE
     pool = await get_pool()
     conn = await pool.acquire()
-    consumed = False
     total_rows = 0
     t0 = time.perf_counter()
     try:
+        # Ping before using the connection for a long streaming read
+        if not await _ping_conn(conn):
+            conn.close()
+            pool.release(conn)
+            # Retry once with a fresh connection
+            conn = await pool.acquire()
+            if not await _ping_conn(conn):
+                conn.close()
+                pool.release(conn)
+                raise ConnectionError("Unable to acquire healthy MySQL connection")
+
         async with conn.cursor(aiomysql.SSDictCursor) as cur:
             await cur.execute(sql, params)
             while True:
                 rows = await cur.fetchmany(size)
                 if not rows:
-                    consumed = True
                     break
                 total_rows += len(rows)
                 yield rows
-    finally:
+        # Fully consumed — safe to release
         _log_sql(sql, params, total_rows, (time.perf_counter() - t0) * 1000)
-        if not consumed and not conn.closed:
-            conn.close()
         pool.release(conn)
+    except GeneratorExit:
+        # Generator not fully consumed — connection state is indeterminate
+        _log_sql(sql, params, total_rows, (time.perf_counter() - t0) * 1000)
+        conn.close()
+        pool.release(conn)
+    except Exception:
+        _log_sql(sql, params, total_rows, (time.perf_counter() - t0) * 1000)
+        # Any error leaves the connection in unknown state — discard it
+        conn.close()
+        pool.release(conn)
+        raise
+
+
+def _is_connection_error(exc: Exception) -> bool:
+    """Return True if the error indicates a broken/stale connection (retryable)."""
+    msg = str(exc).lower()
+    retryable_markers = [
+        "packet sequence",
+        "lost connection",
+        "broken pipe",
+        "gone away",
+        "connection reset",
+        "can't connect",
+        "not connected",
+    ]
+    return any(marker in msg for marker in retryable_markers)

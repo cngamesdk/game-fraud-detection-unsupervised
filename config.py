@@ -65,6 +65,8 @@ class Settings(BaseSettings):
     # ── Scheduler ────────────────────────────────────────────────────────
     TRAINING_CRON_HOUR: int = 3
     TRAINING_CRON_MINUTE: int = 0
+    TRAINING_MAX_RETRIES: int = 3
+    TRAINING_RETRY_DELAY_SECONDS: int = 30
 
     # ── API ──────────────────────────────────────────────────────────────
     API_HOST: str = "0.0.0.0"
